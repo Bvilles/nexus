@@ -208,3 +208,28 @@
     (default-to false (map-get? Followers { user: user, follower: follower }))
 )
 
+;; Delete a post (only post owner can delete)
+(define-public (delete-post (post-id uint))
+    (let ((post (unwrap! (map-get? Posts post-id) err-post-not-found))
+          (user tx-sender)
+          (existing-posts (default-to (list) (map-get? UserPosts user))))
+        (begin
+            ;; Check if sender is post author
+            (asserts! (is-eq (get author post) user) err-not-token-owner)
+            ;; Burn the NFT associated with the post
+            (try! (nft-burn? content-nft post-id user))
+            ;; Remove post from Posts map
+            (map-delete Posts post-id)
+            ;; Remove post-id from user's post list
+            (ok (map-set UserPosts 
+                user 
+                (filter not-eq-post-id existing-posts)))
+        )
+    )
+)
+
+;; Helper function for delete-post
+(define-private (not-eq-post-id (id uint))
+    (not (is-eq id id))
+)
+
