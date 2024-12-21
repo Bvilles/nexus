@@ -14,7 +14,6 @@
 
 ;; Data Variables
 (define-data-var post-counter uint u0)
-(define-data-var comment-counter uint u0)
 
 ;; Data Maps
 (define-map Users 
@@ -32,27 +31,14 @@
       tips-received: uint }
 )
 
-(define-map Comments
-    uint 
-    { post-id: uint,
-      author: principal,
-      content: (string-utf8 500),
-      timestamp: uint }
-)
-
 (define-map UserPosts
     principal
     (list 50 uint)
 )
 
 (define-map Followers
-    { user: principal, follower: principal }
-    bool
-)
-
-(define-map FollowerCounts
-    principal
-    uint
+    { user: principal }
+    (list 500 principal)
 )
 
 ;; NFT Definition for Content
@@ -108,6 +94,7 @@
               (current-tips (get tips-received post)))
             (begin
                 (asserts! (> amount u0) err-invalid-input)
+                (asserts! (is-some (map-get? Users author)) err-invalid-user)
                 (try! (stx-transfer? amount tx-sender author))
                 (ok (map-set Posts post-id
                     (merge post { tips-received: (+ current-tips amount) })))
@@ -123,61 +110,6 @@
         (ok (map-set Users
             tx-sender
             (merge user-data { bio: new-bio })))
-    )
-)
-
-;; Follow a user
-(define-public (follow-user (user principal))
-    (let ((follower tx-sender)
-          (current-count (get-follower-count user)))
-        (begin
-            (asserts! (not (is-eq user follower)) err-invalid-input)
-            (asserts! (is-some (map-get? Users user)) err-invalid-user)
-            (map-set Followers
-                { user: user, follower: follower }
-                true)
-            (map-set FollowerCounts
-                user
-                (+ current-count u1))
-            (ok true)
-        )
-    )
-)
-
-;; Unfollow a user
-(define-public (unfollow-user (user principal))
-    (let ((follower tx-sender)
-          (current-count (get-follower-count user)))
-        (begin
-            (asserts! (not (is-eq user follower)) err-invalid-input)
-            (asserts! (is-some (map-get? Users user)) err-invalid-user)
-            (asserts! (is-following user follower) err-invalid-input)
-            (map-set Followers
-                { user: user, follower: follower }
-                false)
-            (map-set FollowerCounts
-                user
-                (- current-count u1))
-            (ok true)
-        )
-    )
-)
-
-;; Add comment to a post
-(define-public (add-comment (post-id uint) (content (string-utf8 500)))
-    (let ((comment-id (+ (var-get comment-counter) u1)))
-        (begin
-            (asserts! (is-some (map-get? Posts post-id)) err-post-not-found)
-            (asserts! (and (>= (len content) u1) (<= (len content) u500)) err-invalid-input)
-            (map-set Comments
-                comment-id
-                { post-id: post-id,
-                  author: tx-sender,
-                  content: content,
-                  timestamp: block-height })
-            (var-set comment-counter comment-id)
-            (ok comment-id)
-        )
     )
 )
 
@@ -198,38 +130,45 @@
     (map-get? UserPosts user)
 )
 
-;; Get follower count for a user
-(define-read-only (get-follower-count (user principal))
-    (default-to u0 (map-get? FollowerCounts user))
-)
-
-;; Check if one user follows another
-(define-read-only (is-following (user principal) (follower principal))
-    (default-to false (map-get? Followers { user: user, follower: follower }))
-)
-
-;; Delete a post (only post owner can delete)
-(define-public (delete-post (post-id uint))
-    (let ((post (unwrap! (map-get? Posts post-id) err-post-not-found))
-          (user tx-sender)
-          (existing-posts (default-to (list) (map-get? UserPosts user))))
+;; Follow a user
+(define-public (follow-user (user-to-follow principal))
+    (let ((current-user tx-sender)
+          (current-followers (default-to (list) 
+            (map-get? Followers { user: user-to-follow }))))
         (begin
-            ;; Check if sender is post author
-            (asserts! (is-eq (get author post) user) err-not-token-owner)
-            ;; Burn the NFT associated with the post
-            (try! (nft-burn? content-nft post-id user))
-            ;; Remove post from Posts map
-            (map-delete Posts post-id)
-            ;; Remove post-id from user's post list
-            (ok (map-set UserPosts 
-                user 
-                (filter not-eq-post-id existing-posts)))
+            (asserts! (is-some (map-get? Users user-to-follow)) err-invalid-user)
+            (asserts! (not (is-eq current-user user-to-follow)) err-invalid-input)
+            (asserts! (is-none (index-of current-followers current-user)) err-invalid-input)
+            (match (as-max-len? (append current-followers current-user) u500)
+                updated-followers (ok (map-set Followers 
+                    { user: user-to-follow }
+                    updated-followers))
+                err-too-many-posts)
         )
     )
 )
 
-;; Helper function for delete-post
-(define-private (not-eq-post-id (id uint))
-    (not (is-eq id id))
+;; Get followers for a user
+(define-read-only (get-followers (user principal))
+    (default-to (list) (map-get? Followers { user: user }))
 )
 
+;; Unfollow a user
+(define-public (unfollow-user (user-to-unfollow principal))
+    (let ((current-user tx-sender)
+          (current-followers (default-to (list) 
+            (map-get? Followers { user: user-to-unfollow }))))
+        (begin
+            (asserts! (is-some (map-get? Users user-to-unfollow)) err-invalid-user)
+            (asserts! (is-some (index-of current-followers current-user)) err-invalid-input)
+            (ok (map-set Followers 
+                { user: user-to-unfollow }
+                (filter not-current-user current-followers)))
+        )
+    )
+)
+
+;; Helper function for unfollow-user
+(define-private (not-current-user (user principal))
+    (not (is-eq user tx-sender))
+)
